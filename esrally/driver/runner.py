@@ -62,6 +62,7 @@ def register_default_runners(config: Optional[types.Config] = None):
     register_runner(track.OperationType.Sql, Sql(), async_runner=True)
     register_runner(track.OperationType.FieldCaps, FieldCaps(), async_runner=True)
     register_runner(track.OperationType.Esql, Esql(), async_runner=True)
+    register_runner(track.OperationType.SearchProfile, SearchProfile(config=config), async_runner=True)
 
     # This is an administrative operation but there is no need for a retry here as we don't issue a request
     register_runner(track.OperationType.Sleep, Sleep(), async_runner=True)
@@ -1246,6 +1247,107 @@ class Query(Runner):
 
     def __repr__(self, *args, **kwargs):
         return "query"
+
+
+class SearchProfile(Runner):
+    """
+    Runs a profiled search request against Elasticsearch.
+
+    This runner adds "profile": true to the search request body and extracts
+    profiling information from the response. It supports the same parameters
+    as the regular search operation.
+
+    It expects at least the following keys in the `params` hash:
+
+    * `index`: The index or indices against which to issue the query.
+    * `body`: Query body (profile: true will be added automatically)
+
+    The following parameters are optional:
+
+    * `cache`: True iff the request cache should be used.
+    * ``request-timeout``: a non-negative float indicating the client-side timeout.
+
+    Returned meta data includes all profile information from the response:
+
+    * ``weight``: Always 1 for profiled queries.
+    * ``unit``: Always "ops".
+    * ``profile``: The complete profile output from Elasticsearch.
+    * ``profile_shards``: Number of shards that returned profile data.
+    * ``profile_total_time_ns``: Sum of all shard-level query times in nanoseconds.
+    """
+
+    def __init__(self, config=None):
+        super().__init__(config=config)
+
+    async def __call__(self, es, params):
+        params, request_params, transport_params, headers = self._transport_request_params(params)
+        es = es.options(**transport_params)
+
+        index = mandatory(params, "index", self)
+        body = mandatory(params, "body", self)
+
+        # Add profile: true to the body
+        body["profile"] = True
+
+        cache = params.get("cache")
+        if cache is not None:
+            request_params["request_cache"] = str(cache).lower()
+        elif self.serverless_mode and not self.serverless_operator:
+            request_params["request_cache"] = "false"
+
+        encoding_header = self._query_headers(params)
+        if encoding_header is not None:
+            headers.update(encoding_header)
+
+        if not bool(headers):
+            headers = None
+
+        response = await es.search(index=index, body=body, params=request_params, headers=headers)
+
+        # Extract profile information
+        profile = response.get("profile", {})
+        shards = profile.get("shards", [])
+
+        # Calculate total profile time across all shards
+        total_time_ns = 0
+        for shard in shards:
+            for search in shard.get("searches", []):
+                for query in search.get("query", []):
+                    total_time_ns += query.get("time_in_nanos", 0)
+
+        result = {
+            "weight": 1,
+            "unit": "ops",
+            "success": True,
+            "profile": profile,
+            "profile_shards": len(shards),
+            "profile_total_time_ns": total_time_ns,
+        }
+
+        # Add standard search response metadata if available
+        hits = response.get("hits", {})
+        total = hits.get("total", {})
+        if isinstance(total, dict):
+            result["hits"] = total.get("value", 0)
+            result["hits_relation"] = total.get("relation", "eq")
+        else:
+            result["hits"] = total
+            result["hits_relation"] = "eq"
+
+        result["took"] = response.get("took", 0)
+        result["timed_out"] = response.get("timed_out", False)
+
+        return result
+
+    def _query_headers(self, params):
+        # reduces overhead due to decompression of very large responses
+        if params.get("response-compression-enabled", True):
+            return None
+        else:
+            return {"Accept-Encoding": "identity"}
+
+    def __repr__(self, *args, **kwargs):
+        return "search-profile"
 
 
 class SearchAfterExtractor:

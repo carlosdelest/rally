@@ -703,6 +703,7 @@ class OperationType(Enum):
     WaitForCurrentSnapshotsCreate = (19, AdminStatus.No, serverless.Status.Internal)
     Downsample = (20, AdminStatus.No, serverless.Status.Internal)
     Esql = (21, AdminStatus.No, serverless.Status.Public)
+    SearchProfile = (60, AdminStatus.No, serverless.Status.Public)
 
     # administrative actions
     ForceMerge = (22, AdminStatus.Yes, serverless.Status.Internal)
@@ -878,6 +879,8 @@ class OperationType(Enum):
             return OperationType.Esql
         elif v == "run-until":
             return OperationType.RunUntil
+        elif v == "search-profile":
+            return OperationType.SearchProfile
         else:
             raise KeyError(f"No enum value for [{v}]")
 
