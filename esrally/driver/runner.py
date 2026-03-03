@@ -1273,7 +1273,9 @@ class SearchProfile(Runner):
     * ``unit``: Always "ops".
     * ``profile``: The complete profile output from Elasticsearch.
     * ``profile_shards``: Number of shards that returned profile data.
-    * ``profile_total_time_ns``: Sum of all shard-level query times in nanoseconds.
+    * ``query_time_nanos``: Sum of all shard-level query times in nanoseconds.
+    * ``rewrite_time_nanos``: Sum of all shard-level rewrite times in nanoseconds.
+    * ``fetch_time_nanos``: Sum of all shard-level fetch phase times in nanoseconds.
     """
 
     def __init__(self, config=None):
@@ -1308,12 +1310,21 @@ class SearchProfile(Runner):
         profile = response.get("profile", {})
         shards = profile.get("shards", [])
 
-        # Calculate total profile time across all shards
-        total_time_ns = 0
+        # Calculate total profile times across all shards
+        query_time_nanos = 0
+        rewrite_time_nanos = 0
+        fetch_time_nanos = 0
+
         for shard in shards:
+            # Sum query times from all searches
             for search in shard.get("searches", []):
                 for query in search.get("query", []):
-                    total_time_ns += query.get("time_in_nanos", 0)
+                    query_time_nanos += query.get("time_in_nanos", 0)
+                rewrite_time_nanos += search.get("rewrite_time", 0)
+
+            # Sum fetch phase time
+            fetch = shard.get("fetch", {})
+            fetch_time_nanos += fetch.get("time_in_nanos", 0)
 
         result = {
             "weight": 1,
@@ -1321,7 +1332,9 @@ class SearchProfile(Runner):
             "success": True,
             "profile": profile,
             "profile_shards": len(shards),
-            "profile_total_time_ns": total_time_ns,
+            "query_time_nanos": query_time_nanos,
+            "rewrite_time_nanos": rewrite_time_nanos,
+            "fetch_time_nanos": fetch_time_nanos,
         }
 
         # Add standard search response metadata if available
